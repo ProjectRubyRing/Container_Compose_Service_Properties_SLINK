@@ -1,0 +1,118 @@
+{
+  "_comment": [
+    "intra-web タスク定義の例。ポイントは『今回の対応でタスク定義は実質変更不要』ということ。",
+    "既存の /mnt/logs マウントをそのまま流用するため、mountPoints / volumes に追加はない。",
+    "変更点は environment に APP_ROOT / SHARED_CONF_* を明示する程度 (Dockerfile の ENV でも可)。",
+    "他の 3 サービス (intra-api / inter-api / sf-api) も同じ形。"
+  ],
+  "family": "intra-web",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::123456789012:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::123456789012:role/intra-web-task-role",
+
+  "volumes": [
+    {
+      "name": "efs-logs",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-0123456789abcdef0",
+        "rootDirectory": "/",
+        "transitEncryption": "ENABLED"
+      }
+    },
+    {
+      "name": "efs-data",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-0fedcba9876543210",
+        "rootDirectory": "/",
+        "transitEncryption": "ENABLED"
+      }
+    },
+    {
+      "_comment": "ECS Exec (SSM agent) を readonlyRootFilesystem=true で使うための空ボリューム。検証時に必要。",
+      "name": "ssm-lib"
+    },
+    { "name": "ssm-log" },
+    { "name": "app-tmp" }
+  ],
+
+  "containerDefinitions": [
+    {
+      "name": "front",
+      "image": "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/intra-web-front:1.0.0",
+      "essential": true,
+      "user": "6301:6302",
+      "readonlyRootFilesystem": true,
+      "portMappings": [{ "containerPort": 8080, "protocol": "tcp" }],
+
+      "environment": [
+        { "name": "APP_ROOT",           "value": "/webapp/webapp9mf02" },
+        { "name": "SHARED_CONF_DIR",    "value": "/mnt/logs/tmp" },
+        { "name": "SHARED_CONF_SEED",   "value": "on" },
+        { "name": "SHARED_CONF_STRICT", "value": "on" },
+        { "name": "SHARED_CONF_MODE",   "value": "0664" }
+      ],
+
+      "mountPoints": [
+        {
+          "_comment": "★ 既存のまま。/mnt/logs/tmp はこのマウントの中に含まれるので追加不要。",
+          "sourceVolume": "efs-logs",
+          "containerPath": "/mnt/logs",
+          "readOnly": false
+        },
+        { "sourceVolume": "efs-data", "containerPath": "/mnt/data", "readOnly": false },
+        { "sourceVolume": "app-tmp",  "containerPath": "/tmp",      "readOnly": false },
+        { "sourceVolume": "ssm-lib",  "containerPath": "/var/lib/amazon", "readOnly": false },
+        { "sourceVolume": "ssm-log",  "containerPath": "/var/log/amazon", "readOnly": false }
+      ],
+
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/intra-web",
+          "awslogs-region": "ap-northeast-1",
+          "awslogs-stream-prefix": "front"
+        }
+      }
+    },
+    {
+      "name": "back",
+      "image": "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/intra-web-back:1.0.0",
+      "essential": true,
+      "user": "6301:6302",
+      "readonlyRootFilesystem": true,
+
+      "environment": [
+        { "name": "APP_ROOT",           "value": "/webapp/webapp9mb02" },
+        { "name": "SHARED_CONF_DIR",    "value": "/mnt/logs/tmp" },
+        { "name": "SHARED_CONF_SEED",   "value": "on" },
+        { "name": "SHARED_CONF_STRICT", "value": "on" },
+        { "name": "SHARED_CONF_MODE",   "value": "0664" }
+      ],
+
+      "mountPoints": [
+        {
+          "_comment": "★ front と同じ fileSystemId / rootDirectory であることが必須。ここがずれると共有されない。",
+          "sourceVolume": "efs-logs",
+          "containerPath": "/mnt/logs",
+          "readOnly": false
+        },
+        { "sourceVolume": "efs-data", "containerPath": "/mnt/data", "readOnly": false },
+        { "sourceVolume": "app-tmp",  "containerPath": "/tmp",      "readOnly": false },
+        { "sourceVolume": "ssm-lib",  "containerPath": "/var/lib/amazon", "readOnly": false },
+        { "sourceVolume": "ssm-log",  "containerPath": "/var/log/amazon", "readOnly": false }
+      ],
+
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/intra-web",
+          "awslogs-region": "ap-northeast-1",
+          "awslogs-stream-prefix": "back"
+        }
+      }
+    }
+  ]
+}

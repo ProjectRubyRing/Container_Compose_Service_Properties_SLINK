@@ -1,0 +1,24 @@
+# ============================================================================
+# linkmap.alt-b.conf -- 【ALT-B】サービス別・front/back 別に実体を分ける案
+# ============================================================================
+# ${APP_ROOT}/logs は既存のシンボリックリンク:
+#     /webapp/webapp9mf02/logs -> /mnt/logs/front/logs/<service>
+#     /webapp/webapp9mb02/logs -> /mnt/logs/back/logs/<service>
+# これを踏み台にする (symlink -> symlink -> 実体 の 2 段解決)。
+# Linux の ELOOP 上限は 40 なので 2 段は全く問題ない。
+#
+# 利点: イメージ側のリンク文字列を変えずに、実体がサービス/ロールごとに
+#       自動で振り分けられる (= サービス別設定にしてもイメージは増えない)
+# 欠点: 実体が 8 個になるため「共通 1 ファイル」要件は満たさない
+#       -> ec2/init-shared-conf-per-service.sh sync で一括更新すること
+#
+# 併せてタスク定義の environment に以下を設定すること:
+#   front: SHARED_CONF_DIR = /webapp/webapp9mf02/logs/tmp
+#   back : SHARED_CONF_DIR = /webapp/webapp9mb02/logs/tmp
+#   両方 : SHARED_CONF_MOUNT = /mnt/logs     ← 必須
+#          (省略すると /webapp/webapp9mf02 を EFS マウントと誤判定し、
+#           EFS 未マウントでも待ち合わせを抜けてしまう)
+# ============================================================================
+
+# LINK                                                          TARGET
+${APP_ROOT}/servlets/jp/co/sample/base/date_config.properties   ${APP_ROOT}/logs/tmp/date_config.properties   -

@@ -1,0 +1,51 @@
+# ============================================================================
+# Dockerfile.snippet -- 既存の front / back イメージ Dockerfile に追記する差分
+# ============================================================================
+# front / back で同じ内容。違いは build 引数 APP_ROOT だけ。
+#
+#   front:  docker build --build-arg APP_ROOT=/webapp/webapp9mf02 ...
+#   back :  docker build --build-arg APP_ROOT=/webapp/webapp9mb02 ...
+#
+# 配置場所は「アプリの資材 (/webapp/webapp9mXX) を COPY し終えた後」。
+# ここより後で /webapp 配下を上書きすると symlink が消えるので注意。
+#
+# ビルドコンテキスト:
+#   下記 COPY のパスは、このリポジトリのルートをビルドコンテキストにした
+#   場合のもの (image/bin/... )。既存の Dockerfile が別の場所にあるなら、
+#   image/ 配下を Dockerfile から見える位置に置いてパスを合わせること。
+# ============================================================================
+
+# ---- 引数 / 環境変数 --------------------------------------------------------
+ARG APP_ROOT=/webapp/webapp9mf02
+ARG APP_UID=6301
+ARG APP_GID=6302
+
+# 実行時にも同じ値が必要 (entrypoint が linkmap を展開するため) → ENV に固定する
+ENV APP_ROOT=${APP_ROOT} \
+    SHARED_CONF_DIR=/mnt/logs/tmp \
+    DEFAULTS_DIR=/opt/app/shared-conf/defaults \
+    SHARED_CONF_LINKMAP=/opt/app/shared-conf/linkmap.conf \
+    SHARED_CONF_SEED=on \
+    SHARED_CONF_STRICT=on \
+    SHARED_CONF_MODE=0664
+
+# ---- 共有設定ファイル機構の資材を配置 --------------------------------------
+COPY --chown=root:root image/bin/linkmap-lib.sh            /opt/app/shared-conf/bin/
+COPY --chown=root:root image/bin/build-shared-links.sh     /opt/app/shared-conf/bin/
+COPY --chown=root:root image/bin/shared-conf-entrypoint.sh /opt/app/shared-conf/bin/
+COPY --chown=root:root image/linkmap.conf                  /opt/app/shared-conf/linkmap.conf
+
+# ---- ★ 本体: /webapp 配下のプロパティファイルを symlink に置換 -------------
+#      readonlyRootFilesystem=true では実行時に作れないため、ここで焼き込む。
+#      同時に元ファイルを /opt/app/shared-conf/defaults に初期値として退避する。
+RUN set -eux; \
+    chmod 0755 /opt/app/shared-conf/bin/*.sh; \
+    APP_UID="${APP_UID}" APP_GID="${APP_GID}" \
+        /opt/app/shared-conf/bin/build-shared-links.sh; \
+    chown -R "${APP_UID}:${APP_GID}" /opt/app/shared-conf
+
+# ---- ENTRYPOINT を差し替え --------------------------------------------------
+#      元の起動コマンドは CMD 側に移す (entrypoint が exec "$@" で引き継ぐ)。
+USER ${APP_UID}:${APP_GID}
+ENTRYPOINT ["/opt/app/shared-conf/bin/shared-conf-entrypoint.sh"]
+CMD ["/opt/eap/bin/standalone.sh", "-b", "0.0.0.0", "-bmanagement", "0.0.0.0"]

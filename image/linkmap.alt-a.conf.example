@@ -1,0 +1,17 @@
+# ============================================================================
+# linkmap.alt-a.conf -- 【ALT-A】実体をログツリー配下の 1 ファイルに固定する案
+# ============================================================================
+# 全 4 サービス x front/back = 8 コンテナが、この 1 ファイルを共有する。
+# 「共通 1 ファイル」要件は満たすが、パス名 (front / intra-web) と実態が
+# 乖離する点に注意。詳細は docs/alt-per-service-path.md を参照。
+#
+# 併せてタスク定義の environment に以下を設定すること:
+#   SHARED_CONF_DIR   = /mnt/logs/front/logs/intra-web/tmp
+#   SHARED_CONF_MOUNT = /mnt/logs
+#
+# EC2 側:
+#   sudo ./ec2/init-shared-conf.sh --dir /mnt/logs/front/logs/intra-web/tmp
+# ============================================================================
+
+# LINK                                                          TARGET
+${APP_ROOT}/servlets/jp/co/sample/base/date_config.properties   /mnt/logs/front/logs/intra-web/tmp/date_config.properties   -

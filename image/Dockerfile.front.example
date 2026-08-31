@@ -1,0 +1,52 @@
+# ============================================================================
+# Dockerfile.front.example -- 全体像がわかるようにした参考 Dockerfile (front)
+#   back は APP_ROOT を /webapp/webapp9mb02 に変えるだけ。
+# ============================================================================
+FROM registry.access.redhat.com/ubi9/ubi:9.8
+
+ARG APP_UID=6301
+ARG APP_GID=6302
+ARG APP_ROOT=/webapp/webapp9mf02
+ARG SERVICE_NAME=intra-web
+
+# ---- OpenJDK 21 for RHEL / JBoss EAP 8.1 (既存手順のまま) -------------------
+RUN dnf -y install java-21-openjdk-headless && dnf clean all
+# COPY jboss-eap-8.1 /opt/eap   ... など既存の手順
+
+# ---- 実行ユーザ -------------------------------------------------------------
+RUN groupadd -g ${APP_GID} appgroup && \
+    useradd  -u ${APP_UID} -g ${APP_GID} -m -d /home/appuser -s /sbin/nologin appuser
+
+# ---- EFS マウントポイント / 既存シンボリックリンク (既存構成) ---------------
+RUN mkdir -p /mnt/logs /mnt/data ${APP_ROOT} && \
+    ln -sfn /mnt/logs/front/logs/${SERVICE_NAME}             ${APP_ROOT}/logs && \
+    ln -sfn /mnt/data/pdf                                   ${APP_ROOT}/pdf
+
+# ---- アプリ資材 -------------------------------------------------------------
+COPY --chown=${APP_UID}:${APP_GID} app/ ${APP_ROOT}/
+
+# ============================================================================
+# ↓↓↓ ここから今回の追加分 (image/Dockerfile.snippet と同じ内容) ↓↓↓
+# ============================================================================
+ENV APP_ROOT=${APP_ROOT} \
+    SHARED_CONF_DIR=/mnt/logs/tmp \
+    DEFAULTS_DIR=/opt/app/shared-conf/defaults \
+    SHARED_CONF_LINKMAP=/opt/app/shared-conf/linkmap.conf \
+    SHARED_CONF_SEED=on \
+    SHARED_CONF_STRICT=on \
+    SHARED_CONF_MODE=0664
+
+COPY image/bin/linkmap-lib.sh            /opt/app/shared-conf/bin/
+COPY image/bin/build-shared-links.sh     /opt/app/shared-conf/bin/
+COPY image/bin/shared-conf-entrypoint.sh /opt/app/shared-conf/bin/
+COPY image/linkmap.conf                  /opt/app/shared-conf/linkmap.conf
+
+RUN set -eux; \
+    chmod 0755 /opt/app/shared-conf/bin/*.sh; \
+    APP_UID="${APP_UID}" APP_GID="${APP_GID}" \
+        /opt/app/shared-conf/bin/build-shared-links.sh; \
+    chown -R "${APP_UID}:${APP_GID}" /opt/app/shared-conf
+
+USER ${APP_UID}:${APP_GID}
+ENTRYPOINT ["/opt/app/shared-conf/bin/shared-conf-entrypoint.sh"]
+CMD ["/opt/eap/bin/standalone.sh", "-b", "0.0.0.0"]
