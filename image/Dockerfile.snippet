@@ -1,10 +1,23 @@
 # ============================================================================
 # Dockerfile.snippet -- 既存の front / back イメージ Dockerfile に追記する差分
 # ============================================================================
-# front / back で同じ内容。違いは build 引数 APP_ROOT だけ。
+# front / back で同じ内容。違いは build 引数だけ。
 #
 #   front:  docker build --build-arg APP_ROOT=/webapp/webapp9mf02 ...
 #   back :  docker build --build-arg APP_ROOT=/webapp/webapp9mb02 ...
+#
+# ---- symlink を作る / 作らない の切り替え ----------------------------------
+#   SHARED_CONF_SYMLINK=on  (既定)
+#       プロパティファイルを EFS 上の 1 ファイルへの symlink に置き換える。
+#       実行時は entrypoint が実体の生成とリンク検証を行う。
+#   SHARED_CONF_SYMLINK=off
+#       symlink を作らず、イメージ内の実ファイルをそのまま使う (従来のイメージ)。
+#       ビルド時は対象ファイルの存在確認のみ。実行時も EFS に触れない。
+#
+#   docker build --build-arg APP_ROOT=/webapp/webapp9mf02 \
+#                --build-arg SHARED_CONF_SYMLINK=on  -t <repo>/intra-web-front:1.0.0 .
+#   docker build --build-arg APP_ROOT=/webapp/webapp9mf02 \
+#                --build-arg SHARED_CONF_SYMLINK=off -t <repo>/intra-web-front:1.0.0-nolink .
 #
 # 配置場所は「アプリの資材 (/webapp/webapp9mXX) を COPY し終えた後」。
 # ここより後で /webapp 配下を上書きすると symlink が消えるので注意。
@@ -19,9 +32,14 @@
 ARG APP_ROOT=/webapp/webapp9mf02
 ARG APP_UID=6301
 ARG APP_GID=6302
+ARG SHARED_CONF_SYMLINK=on
 
-# 実行時にも同じ値が必要 (entrypoint が linkmap を展開するため) → ENV に固定する
+# 実行時にも同じ値が必要 (entrypoint が linkmap を展開し、ビルド時と同じ
+# モードで動く必要があるため) → ENV に固定する。
+# SHARED_CONF_SYMLINK はイメージの中身と対でなければならないので、
+# タスク定義の environment で上書きしないこと。
 ENV APP_ROOT=${APP_ROOT} \
+    SHARED_CONF_SYMLINK=${SHARED_CONF_SYMLINK} \
     SHARED_CONF_DIR=/mnt/logs/tmp \
     DEFAULTS_DIR=/opt/app/shared-conf/defaults \
     SHARED_CONF_LINKMAP=/opt/app/shared-conf/linkmap.conf \
@@ -38,6 +56,8 @@ COPY --chown=root:root image/linkmap.conf                  /opt/app/shared-conf/
 # ---- ★ 本体: /webapp 配下のプロパティファイルを symlink に置換 -------------
 #      readonlyRootFilesystem=true では実行時に作れないため、ここで焼き込む。
 #      同時に元ファイルを /opt/app/shared-conf/defaults に初期値として退避する。
+#      SHARED_CONF_SYMLINK=off の場合は置換も退避も行わず、対象ファイルが
+#      実ファイルとして存在することの確認だけを行う (ENV 経由で伝わる)。
 RUN set -eux; \
     chmod 0755 /opt/app/shared-conf/bin/*.sh; \
     APP_UID="${APP_UID}" APP_GID="${APP_GID}" \
@@ -46,6 +66,8 @@ RUN set -eux; \
 
 # ---- ENTRYPOINT を差し替え --------------------------------------------------
 #      元の起動コマンドは CMD 側に移す (entrypoint が exec "$@" で引き継ぐ)。
+#      SHARED_CONF_SYMLINK=off のイメージでも同じ entrypoint でよい
+#      (EFS 待ち・シード・リンク検証はスキップされる)。
 USER ${APP_UID}:${APP_GID}
 ENTRYPOINT ["/opt/app/shared-conf/bin/shared-conf-entrypoint.sh"]
 CMD ["/opt/eap/bin/standalone.sh", "-b", "0.0.0.0", "-bmanagement", "0.0.0.0"]

@@ -3,7 +3,9 @@
     "intra-web タスク定義の例。ポイントは『今回の対応でタスク定義は実質変更不要』ということ。",
     "既存の /mnt/logs マウントをそのまま流用するため、mountPoints / volumes に追加はない。",
     "変更点は environment に APP_ROOT / SHARED_CONF_* を明示する程度 (Dockerfile の ENV でも可)。",
-    "他の 3 サービス (intra-api / inter-api / sf-api) も同じ形。"
+    "他の 3 サービス (intra-api / inter-api / sf-api) も同じ形。",
+    "SHARED_CONF_SYMLINK (symlink を作る/作らない) はイメージの中身と対になるビルド引数なので、",
+    "ここでは指定しない。Dockerfile の ARG/ENV に任せること (食い違うと entrypoint が起動を中止する)。"
   ],
   "family": "intra-web",
   "networkMode": "awsvpc",

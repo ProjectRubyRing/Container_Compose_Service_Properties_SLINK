@@ -11,12 +11,17 @@
 #   3) 各シンボリックリンクが実際に解決できることを検証 (fail fast)
 #   4) exec で本来のプロセス (JBoss EAP の起動コマンド) に引き継ぐ
 #
+# SHARED_CONF_SYMLINK=off (= symlink なしでビルドしたイメージ) の場合は
+# 1)〜3) をスキップし、対象がイメージ内の実ファイルであることだけ確認して exec する。
+# EFS へのアクセスも一切行わないので、共有機構なしの構成でも同じ entrypoint で動く。
+#
 # Dockerfile:
 #   ENTRYPOINT ["/opt/app/shared-conf/bin/shared-conf-entrypoint.sh"]
 #   CMD ["/opt/eap/bin/standalone.sh", "-b", "0.0.0.0"]
 #
 # 環境変数:
 #   APP_ROOT            必須 (/webapp/webapp9mf02 または /webapp/webapp9mb02)
+#   SHARED_CONF_SYMLINK on(既定) | off   ビルド時と同じ値。off なら共有機構を無効化
 #   SHARED_CONF_DIR     既定 /mnt/logs/tmp
 #   SHARED_CONF_SEED    on(既定) | off   実体が無いときに初期値から生成するか
 #   SHARED_CONF_STRICT  on(既定) | off   リンクが解決できないとき起動を中止するか
@@ -29,10 +34,15 @@ set -eu
 SC_TAG="shared-conf/init"
 . "$(dirname "$0")/linkmap-lib.sh"
 
+: "${SHARED_CONF_SYMLINK:=on}"
 : "${SHARED_CONF_SEED:=on}"
 : "${SHARED_CONF_STRICT:=on}"
 : "${SHARED_CONF_MODE:=0664}"
 : "${SHARED_CONF_WAIT:=30}"
+
+SHARED_CONF_SYMLINK=$(sc_flag SHARED_CONF_SYMLINK "${SHARED_CONF_SYMLINK}") || exit 1
+SHARED_CONF_SEED=$(sc_flag    SHARED_CONF_SEED    "${SHARED_CONF_SEED}")    || exit 1
+SHARED_CONF_STRICT=$(sc_flag  SHARED_CONF_STRICT  "${SHARED_CONF_STRICT}")  || exit 1
 
 if [ -z "${APP_ROOT:-}" ]; then
     sc_err "APP_ROOT が設定されていません。"
@@ -41,6 +51,53 @@ if [ -z "${APP_ROOT:-}" ]; then
     exit 1
 fi
 
+# ===========================================================================
+# SHARED_CONF_SYMLINK=off : 共有機構なしのイメージ
+#   EFS には触れない。対象が実ファイルとして読めることだけ確認して起動する。
+# ===========================================================================
+_check_plain_one() {
+    _link="$1"
+
+    if [ -L "$_link" ]; then
+        sc_err "SHARED_CONF_SYMLINK=off ですが symlink になっています: ${_link} -> $(readlink "$_link")"
+        sc_err "  イメージが SHARED_CONF_SYMLINK=on でビルドされている可能性があります。"
+        sc_err "  ビルド時と実行時で値を揃えてください (Dockerfile の ARG/ENV を確認)。"
+        return 1
+    fi
+    if [ ! -f "$_link" ]; then
+        sc_err "ファイルが存在しません: ${_link}"
+        return 1
+    fi
+    if [ ! -r "$_link" ]; then
+        sc_err "読み取り権限がありません: ${_link} (uid=$(id -u) gid=$(id -g))"
+        return 1
+    fi
+    sc_log "検証OK: ${_link} (イメージ内の実ファイル / $(wc -c < "$_link" | tr -d ' ') bytes)"
+    return 0
+}
+
+if [ "${SHARED_CONF_SYMLINK}" = "off" ]; then
+    sc_log "APP_ROOT=${APP_ROOT} symlink=off (共有機構は無効。EFS 待ち・シード・リンク検証をスキップ)"
+    sc_log "uid=$(id -u) gid=$(id -g)"
+
+    _plain_rc=0
+    sc_each_entry _check_plain_one || _plain_rc=1
+
+    if [ "${_plain_rc}" -ne 0 ]; then
+        if [ "${SHARED_CONF_STRICT}" = "on" ]; then
+            sc_err "設定ファイルの確認に失敗したため起動を中止します (SHARED_CONF_STRICT=on)"
+            exit 1
+        fi
+        sc_warn "設定ファイルの確認に失敗しましたが SHARED_CONF_STRICT=off のため続行します"
+    fi
+
+    sc_log "準備完了。アプリケーションを起動します: $*"
+    exec "$@"
+fi
+
+# ===========================================================================
+# SHARED_CONF_SYMLINK=on : EFS 上の実体を用意してから起動する
+# ===========================================================================
 sc_log "APP_ROOT=${APP_ROOT} SHARED_CONF_DIR=${SHARED_CONF_DIR} seed=${SHARED_CONF_SEED} strict=${SHARED_CONF_STRICT}"
 sc_log "uid=$(id -u) gid=$(id -g)"
 

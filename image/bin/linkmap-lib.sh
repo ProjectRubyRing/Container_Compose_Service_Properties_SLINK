@@ -6,6 +6,7 @@
 #
 # 提供するもの:
 #   sc_log / sc_warn / sc_err   : ログ出力
+#   sc_flag <名前> <値>         : on/off 系フラグの正規化 (true/1/yes なども受ける)
 #   sc_expand <str>             : ${APP_ROOT} 等のトークン展開
 #   sc_each_entry <callback>    : linkmap を1行ずつ読み、callback LINK TARGET DEFAULT を呼ぶ
 #
@@ -20,6 +21,27 @@ SC_TAG="${SC_TAG:-shared-conf}"
 sc_log()  { echo "[${SC_TAG}] $*"; }
 sc_warn() { echo "[${SC_TAG}][WARN] $*" >&2; }
 sc_err()  { echo "[${SC_TAG}][ERROR] $*" >&2; }
+
+# ---------------------------------------------------------------------------
+# sc_flag <名前> <値>
+#   on/off 系フラグを "on" / "off" に正規化して出力する。
+#   docker の --build-arg やタスク定義の environment 経由で渡る値は
+#   true/1/yes のように揺れやすいため、まとめてここで吸収する。
+#   解釈できない値は設定ミスなので黙って off 扱いにせずエラーにする。
+#
+#   使い方:  FOO=$(sc_flag FOO "${FOO}") || exit 1
+# ---------------------------------------------------------------------------
+sc_flag() {
+    case "$2" in
+        on|On|ON|true|True|TRUE|yes|Yes|YES|1|enable|enabled)
+            printf 'on' ;;
+        off|Off|OFF|false|False|FALSE|no|No|NO|0|disable|disabled)
+            printf 'off' ;;
+        *)
+            sc_err "$1 の値が不正です: '$2'  (on|off / true|false / 1|0 のいずれかを指定してください)"
+            return 1 ;;
+    esac
+}
 
 : "${SHARED_CONF_DIR:=/mnt/logs/tmp}"
 : "${DEFAULTS_DIR:=/opt/app/shared-conf/defaults}"

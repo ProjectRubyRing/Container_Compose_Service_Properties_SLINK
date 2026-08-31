@@ -1,6 +1,9 @@
 # ============================================================================
 # Dockerfile.front.example -- 全体像がわかるようにした参考 Dockerfile (front)
 #   back は APP_ROOT を /webapp/webapp9mb02 に変えるだけ。
+#
+#   symlink あり:  docker build --build-arg SHARED_CONF_SYMLINK=on  ... (既定)
+#   symlink なし:  docker build --build-arg SHARED_CONF_SYMLINK=off ...
 # ============================================================================
 FROM registry.access.redhat.com/ubi9/ubi:9.8
 
@@ -8,6 +11,7 @@ ARG APP_UID=6301
 ARG APP_GID=6302
 ARG APP_ROOT=/webapp/webapp9mf02
 ARG SERVICE_NAME=intra-web
+ARG SHARED_CONF_SYMLINK=on
 
 # ---- OpenJDK 21 for RHEL / JBoss EAP 8.1 (既存手順のまま) -------------------
 RUN dnf -y install java-21-openjdk-headless && dnf clean all

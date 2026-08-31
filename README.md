@@ -54,6 +54,7 @@ taskdef/
 
 test/
   selftest.sh                        メイン実装の E2E 検証 (実 EFS 不要)
+  selftest-nolink.sh                 SHARED_CONF_SYMLINK=off (symlink なしビルド) の検証
   selftest-alt.sh                    ALT-A / ALT-B の検証
 
 docs/
@@ -73,6 +74,7 @@ docs/
 
 # 実装ロジックの検証 (実 EFS 不要)
 bash test/selftest.sh
+bash test/selftest-nolink.sh
 ```
 
 ### 1. EC2 側の初期構築 (1 回だけ)
@@ -98,6 +100,46 @@ docker build --build-arg APP_ROOT=/webapp/webapp9mb02 -t <repo>/intra-web-back:1
 [shared-conf/build] symlink 作成               : /webapp/.../date_config.properties -> /mnt/logs/tmp/date_config.properties
 [shared-conf/build] OK: 全エントリのシンボリックリンクをイメージに焼き込みました
 ```
+
+#### symlink を作らないビルド (`SHARED_CONF_SYMLINK=off`)
+
+同じ Dockerfile のまま、ビルド引数だけで**共有しないイメージ**も作れる。
+段階導入・切り戻し・共有が不要なサービス向け。
+
+```bash
+# 共有あり (既定) : プロパティファイルを EFS 上の1ファイルへの symlink にする
+docker build --build-arg APP_ROOT=/webapp/webapp9mf02 \
+             --build-arg SHARED_CONF_SYMLINK=on \
+             -t <repo>/intra-web-front:1.0.0 .
+
+# 共有なし        : symlink を作らず、イメージ内の実ファイルをそのまま使う
+docker build --build-arg APP_ROOT=/webapp/webapp9mf02 \
+             --build-arg SHARED_CONF_SYMLINK=off \
+             -t <repo>/intra-web-front:1.0.0-nolink .
+```
+
+| | `on` (既定) | `off` |
+|---|---|---|
+| ビルド時 | 元ファイルを `defaults/` に退避し、`LINK` を symlink に置換 | **イメージを書き換えない**。対象が実ファイルとして存在するかの検証のみ |
+| 実行時 | EFS マウント待ち → 実体をシード → リンク解決を検証 → `exec` | 検証のみ (**EFS に一切触れない**) → `exec` |
+| 設定の実体 | EFS 上に 1 ファイル (8 コンテナで共有) | イメージ内に 1 つずつ (共有されない) |
+| 設定の変更方法 | EC2 から編集 → 再デプロイ | イメージ再ビルド |
+| EFS への依存 | あり (`/mnt/logs` が無いと起動失敗) | なし |
+
+`off` のビルドログ:
+
+```
+[shared-conf/build] SHARED_CONF_SYMLINK  = off
+[shared-conf/build] symlink は作成しません (共有機構なしのイメージをビルドします)
+[shared-conf/build] 実ファイルのまま維持       : /webapp/.../date_config.properties
+[shared-conf/build] OK: 全エントリをイメージ内の実ファイルのまま維持しました (SHARED_CONF_SYMLINK=off)
+```
+
+**値はビルド時と実行時で一致していなければならない。**
+`ARG` の値は `ENV` に固定されてイメージに焼き込まれるので、
+タスク定義の `environment` で上書きしないこと。
+食い違った場合 (例: `on` で焼いたイメージを `off` で起動) は
+entrypoint が検出して起動を中止する (`SHARED_CONF_STRICT=on` のとき)。
 
 ### 3. デプロイ
 
@@ -150,6 +192,7 @@ ${APP_ROOT}/servlets/jp/co/sample/base/holiday_config.properties  ${SHARED_CONF_
 | 変数 | 既定値 | 説明 |
 |---|---|---|
 | `APP_ROOT` | (必須) | `/webapp/webapp9mf02` (front) / `/webapp/webapp9mb02` (back) |
+| `SHARED_CONF_SYMLINK` | `on` | `on`=symlink を作り EFS 上の1ファイルを共有 / `off`=symlink を作らずイメージ内の実ファイルを使う。**ビルド引数で指定し、実行時も同じ値**にする |
 | `SHARED_CONF_DIR` | `/mnt/logs/tmp` | 実体を置くディレクトリ |
 | `SHARED_CONF_MOUNT` | 自動判定 | EFS マウントポイント (起動時の待ち合わせ対象) |
 | `SHARED_CONF_LINKMAP` | `/opt/app/shared-conf/linkmap.conf` | マニフェストの場所 |
@@ -158,6 +201,9 @@ ${APP_ROOT}/servlets/jp/co/sample/base/holiday_config.properties  ${SHARED_CONF_
 | `SHARED_CONF_STRICT` | `on` | リンクを解決できないとき起動を中止するか |
 | `SHARED_CONF_MODE` | `0664` | 生成する実体の permission |
 | `SHARED_CONF_WAIT` | `30` | EFS マウント待ちの最大秒数 |
+
+`on` / `off` 系の値は `true`/`false`、`1`/`0`、`yes`/`no` でも指定できる
+(解釈できない値は誤設定として起動・ビルドを失敗させる)。
 
 `SHARED_CONF_DIR` は **linkmap と一致していなければならない**
 (linkmap 側の `${SHARED_CONF_DIR}` 展開に使われるため)。
@@ -176,6 +222,14 @@ Dockerfile の `ENV` で固定しておき、タスク定義では上書きし�
 - **タスク再起動で編集内容が維持される** (既存があれば絶対に上書きしない)
 - EC2 側の編集が front/back 両方から見える
 - リンクが解決できない場合は起動を中止する (`SHARED_CONF_STRICT=on`)
+
+`test/selftest-nolink.sh` では `SHARED_CONF_SYMLINK=off` 側を検証済み (18 項目 all pass):
+
+- symlink が作られず、イメージ内の実ファイルが内容そのままで残る
+- EFS が無くても起動でき、EFS 側に何も作らない
+- front / back の設定は共有されない (= off の期待どおりの挙動)
+- ビルド時と実行時でフラグが食い違えば起動を中止する
+- `true` / `1` などの表記揺れを吸収し、不正値はビルドを失敗させる
 
 ---
 

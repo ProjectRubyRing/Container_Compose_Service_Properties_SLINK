@@ -5,15 +5,25 @@
 # readonlyRootFilesystem=true のため、/webapp 配下のシンボリックリンクは
 # 実行時には作れない。よって「イメージに焼き込む」のがこのスクリプトの役目。
 #
-# 各エントリについて:
+# ---- ビルドモード (SHARED_CONF_SYMLINK) ------------------------------------
+#   on  (既定) : symlink を作成する = EFS 上の 1 ファイルを共有する構成
+#   off        : symlink を作成しない = 各イメージが自前の実ファイルを持つ従来構成
+#
+# on の場合、各エントリについて:
 #   1) イメージ内の実ファイル (LINK の位置にある元ファイル) を DEFAULT に退避
 #      → 実行時の初回シード元になる
 #   2) LINK を TARGET を指すシンボリックリンクに置き換える
 #      → ビルド時点では dangling (EFS 未マウント) だが、シンボリックリンクは
 #        アクセス時に解決されるため実行時にマウントされていれば正しく解決される
 #
+# off の場合はイメージを一切書き換えない。linkmap の各 LINK が
+# 「実ファイルとして存在するか」だけを検証する (ビルドの取り違え検知)。
+# 実行時の entrypoint も同じフラグを見て、EFS 待ち・シード・リンク検証を
+# まとめてスキップする。
+#
 # 使い方 (Dockerfile 内):
-#   RUN APP_ROOT=/webapp/webapp9mf02 /opt/app/shared-conf/bin/build-shared-links.sh
+#   RUN APP_ROOT=/webapp/webapp9mf02 SHARED_CONF_SYMLINK=on \
+#         /opt/app/shared-conf/bin/build-shared-links.sh
 # ============================================================================
 set -eu
 
@@ -23,12 +33,52 @@ SC_TAG="shared-conf/build"
 : "${APP_UID:=6301}"
 : "${APP_GID:=6302}"
 : "${DEFAULT_FILE_MODE:=0644}"
+: "${SHARED_CONF_SYMLINK:=on}"
 
-sc_log "APP_ROOT        = ${APP_ROOT}"
-sc_log "SHARED_CONF_DIR = ${SHARED_CONF_DIR}"
-sc_log "DEFAULTS_DIR    = ${DEFAULTS_DIR}"
-sc_log "linkmap         = ${SHARED_CONF_LINKMAP}"
+SHARED_CONF_SYMLINK=$(sc_flag SHARED_CONF_SYMLINK "${SHARED_CONF_SYMLINK}") || exit 1
 
+sc_log "APP_ROOT             = ${APP_ROOT}"
+sc_log "SHARED_CONF_SYMLINK  = ${SHARED_CONF_SYMLINK}"
+sc_log "SHARED_CONF_DIR      = ${SHARED_CONF_DIR}"
+sc_log "DEFAULTS_DIR         = ${DEFAULTS_DIR}"
+sc_log "linkmap              = ${SHARED_CONF_LINKMAP}"
+
+# ===========================================================================
+# SHARED_CONF_SYMLINK=off : 共有しない。イメージには手を入れない。
+# ===========================================================================
+_keep_one() {
+    _link="$1"
+
+    if [ -L "$_link" ]; then
+        sc_err "既にシンボリックリンクです: ${_link} -> $(readlink "$_link")"
+        sc_err "  SHARED_CONF_SYMLINK=off は「イメージ内の実ファイルを使う」ビルドです。"
+        sc_err "  ベースイメージや先行ステージで symlink 化していないか確認してください。"
+        return 1
+    fi
+    if [ ! -f "$_link" ]; then
+        sc_err "実ファイルが見つかりません: ${_link}"
+        sc_err "  linkmap の LINK 列と APP_ROOT が正しいか、アプリ資材の COPY より"
+        sc_err "  後ろでこのスクリプトを実行しているかを確認してください。"
+        return 1
+    fi
+
+    sc_log "実ファイルのまま維持       : ${_link}"
+    return 0
+}
+
+if [ "${SHARED_CONF_SYMLINK}" = "off" ]; then
+    sc_log "symlink は作成しません (共有機構なしのイメージをビルドします)"
+    if ! sc_each_entry _keep_one; then
+        sc_err "対象ファイルの確認に失敗しました"
+        exit 1
+    fi
+    sc_log "OK: 全エントリをイメージ内の実ファイルのまま維持しました (SHARED_CONF_SYMLINK=off)"
+    exit 0
+fi
+
+# ===========================================================================
+# SHARED_CONF_SYMLINK=on : 初期値を退避し、LINK を symlink に置き換える
+# ===========================================================================
 _build_one() {
     _link="$1"; _target="$2"; _default="$3"
 

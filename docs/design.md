@@ -36,7 +36,7 @@ dangling でも、実行時にマウントされていれば正しく解決さ�
 ## 3. 全体構成
 
 ```
-【ビルド時 (root)】
+【ビルド時 (root)】  ※ SHARED_CONF_SYMLINK=on の場合。off は §9 参照
   build-shared-links.sh
     ├─ 元ファイルを /opt/app/shared-conf/defaults/... に初期値として退避
     └─ /webapp/webapp9mXX/servlets/jp/co/sample/base/date_config.properties
@@ -217,6 +217,79 @@ sudo ./ec2/edit-shared-conf.sh --set date.format=yyyy-MM-dd /mnt/logs/tmp/date_c
 2. 再ビルド → `/webapp/.../date_config.properties` はイメージ内の実ファイルに戻る
 3. デプロイ
 
+linkmap.conf を触らず、ビルド引数だけで戻すこともできる (§9):
+
+```bash
+docker build --build-arg SHARED_CONF_SYMLINK=off ...
+```
+
 緊急時 (再ビルドが間に合わない) の暫定回避:
 `/mnt/logs/tmp/date_config.properties` の内容をイメージ既定値に戻す。
 symlink 自体は残るが、アプリから見える内容は元通りになる。
+
+---
+
+## 9. ビルドモード: symlink あり / なし (`SHARED_CONF_SYMLINK`)
+
+同一の Dockerfile / linkmap.conf のまま、ビルド引数だけで
+「共有するイメージ」と「共有しないイメージ」を作り分けられる。
+
+```bash
+docker build --build-arg SHARED_CONF_SYMLINK=on  ...   # 既定 (共有あり)
+docker build --build-arg SHARED_CONF_SYMLINK=off ...   # 共有なし
+```
+
+### 9.1 処理の分岐点
+
+| | `on` | `off` |
+|---|---|---|
+| `build-shared-links.sh` | 元ファイルを `defaults/` に退避 → `LINK` を `TARGET` への symlink に置換 → リンク先を検証 | **イメージを書き換えない**。`LINK` が実ファイルとして存在するかだけ検証 |
+| `shared-conf-entrypoint.sh` | EFS マウント待ち → 実体をシード (`link(2)`) → リンク解決を検証 → `exec` | `LINK` が実ファイルとして読めるかだけ検証 → `exec` |
+| EFS への依存 | あり。`/mnt/logs` が無ければ起動失敗 (`SHARED_CONF_STRICT=on`) | **なし**。EFS に一切アクセスしない |
+| 設定の変更 | EC2 で編集 → 再デプロイ | イメージ再ビルド |
+
+`off` でも entrypoint と linkmap はイメージに入ったままなので、
+**イメージの構成 (COPY / ENTRYPOINT / CMD) は両モードで完全に同じ**。
+差分は「`/webapp/.../*.properties` が symlink か実ファイルか」だけになる。
+
+### 9.2 なぜ off でも entrypoint を残すか
+
+Dockerfile を 1 本に保つため。`off` のときに ENTRYPOINT まで分岐させると、
+CMD の書き分けや USER 指定の重複が発生し、両モードの差分が広がって
+「off でビルドしたイメージだけ起動コマンドが古い」という事故が起きやすい。
+
+`off` の entrypoint は EFS に触れず、対象ファイルの存在確認だけを行って
+即座に `exec` するため、起動時間への影響は無視できる。
+
+### 9.3 ビルド時と実行時で値が食い違った場合
+
+`SHARED_CONF_SYMLINK` の値は `ARG` から `ENV` に固定され、
+ビルド時 (`build-shared-links.sh`) と実行時 (`shared-conf-entrypoint.sh`) の
+両方が同じ値を読む。タスク定義の `environment` で上書きすると
+イメージの中身と食い違うため、entrypoint が検出して起動を中止する。
+
+| イメージ | 実行時の値 | 挙動 |
+|---|---|---|
+| `on` で焼いた | `off` | `symlink になっています` → 起動中止 |
+| `off` で焼いた | `on` | `シンボリックリンクではありません` → 起動中止 |
+
+いずれも `SHARED_CONF_STRICT=off` にすれば警告のみで続行するが、
+**アプリが意図しない設定ファイルを読むことになる**ので推奨しない。
+
+### 9.4 想定する使いどころ
+
+- **段階導入**: 共有が必要なサービスだけ `on` でビルドし、残りは `off` のまま。
+  タスク定義もイメージ構成も変えずにサービス単位で切り替えられる
+- **切り戻し**: 共有機構に問題が出たとき、`off` で再ビルドすれば
+  linkmap.conf を編集せずに従来のイメージへ戻せる (§8)
+- **ローカル/CI**: EFS が無い環境で動かすイメージ。`off` なら
+  `/mnt/logs` が存在しなくても起動できる
+
+### 9.5 値の表記揺れ
+
+`--build-arg` やタスク定義からは `true` / `1` / `yes` のような値が
+渡されがちなので、`sc_flag` (linkmap-lib.sh) で `on` / `off` に正規化する。
+`on`/`off`, `true`/`false`, `yes`/`no`, `1`/`0`, `enable(d)`/`disable(d)` を受け付け、
+**解釈できない値は黙って off 扱いにせずエラーにする** (`SHARED_CONF_SYMLINK=of`
+のようなタイプミスで共有が無効化されたまま気づかない事故を防ぐため)。
+この正規化は `SHARED_CONF_SEED` / `SHARED_CONF_STRICT` にも適用している。
