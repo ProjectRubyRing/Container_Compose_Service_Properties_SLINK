@@ -145,4 +145,12 @@ cat <<'NEXT'
 注意: アプリが起動時に1回だけ Properties を load する実装の場合、
       この編集だけでは反映されません。ECS サービスの再デプロイが必要です。
         aws ecs update-service --cluster <cluster> --service <svc> --force-new-deployment
+
+      SHARED_CONF_OVERLAY=on のイメージ (WAR への Deployment Overlay) を
+      使っている場合は、サービス全体を再デプロイせずに
+      コンテナ内で overlay を再適用するだけで反映できます。
+        aws ecs execute-command --cluster <cluster> --task <task-id> --container front \
+          --interactive --command "/opt/app/shared-conf/bin/deployment-overlay.sh apply"
+      overlay は適用時点のコピーなので、編集しただけでは WAR 側に反映されません。
+      詳細は docs/deployment-overlay.md §5.4。
 NEXT

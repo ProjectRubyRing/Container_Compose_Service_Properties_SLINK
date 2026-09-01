@@ -36,7 +36,7 @@ dangling でも、実行時にマウントされていれば正しく解決さ�
 ## 3. 全体構成
 
 ```
-【ビルド時 (root)】  ※ SHARED_CONF_SYMLINK=on の場合。off は §9 参照
+【ビルド時 (root)】  ※ SHARED_CONF_SYMLINK=on の場合。off (既定) は §9 参照
   build-shared-links.sh
     ├─ 元ファイルを /opt/app/shared-conf/defaults/... に初期値として退避
     └─ /webapp/webapp9mXX/servlets/jp/co/sample/base/date_config.properties
@@ -141,8 +141,16 @@ EFS は NFSv4。`lastModified` / ファイルサイズ等の属性は
 
 `/webapp/webapp9mXX` は展開済みディレクトリとして扱われている構成に見えるため
 1つ目/2つ目に該当するはずだが、**適用前に §7 の手順で実測すること**。
-3つ目に該当した場合は、アプリ側を絶対パス読み込みに変えるか、
-`jboss-deployment-structure.xml` で外部ディレクトリを resource-root に加える対応が必要。
+
+3つ目 (WAR/EAR アーカイブを VFS が展開して読む形態) に該当した場合の対応が
+**Deployment Overlays** (`SHARED_CONF_OVERLAY=on`)。
+配備済みアーカイブを書き換えずに、管理レイヤで当該パスを外部ファイルの内容に
+差し替える。アーカイブ内のパスは `deployment browse-content` で実測して特定するので、
+同名ファイルが複数の WAR に入っていても取りこぼさない。
+設計・前提条件・運用は [deployment-overlay.md](deployment-overlay.md) を参照。
+
+overlay を使わずアプリ側で対応するなら、絶対パス読み込みに変えるか、
+`jboss-deployment-structure.xml` で外部ディレクトリを resource-root に加える。
 
 ### 6.4 ECS Exec と readonlyRootFilesystem
 
@@ -181,8 +189,10 @@ sudo chown -h 6301:6302 /mnt/logs/tmp/date_config.properties
 # (1) タスク定義が共有可能な状態か (front/back の rootDirectory 一致確認)
 ./taskdef/verify-taskdef.sh intra-api inter-api sf-api intra-web
 
-# (2) 実装のロジック検証 (実 EFS 不要)
+# (2) 実装のロジック検証 (実 EFS / 実 JBoss 不要)
 bash test/selftest.sh
+bash test/selftest-nolink.sh
+bash test/selftest-overlay.sh
 
 # (3) EC2 側の初期構築
 sudo ./ec2/init-shared-conf.sh
@@ -203,6 +213,12 @@ aws ecs execute-command --cluster <cluster> --task <task-id> --container front \
 sudo ./ec2/edit-shared-conf.sh --set date.format=yyyy-MM-dd /mnt/logs/tmp/date_config.properties
 
 # (7) アプリの動作としても反映されるか確認 (再デプロイ要否の判断 = §6.1)
+#     ここで「ファイルは変わっているのにアプリの挙動が変わらない」なら
+#     §6.3 の 3 番目 (WAR アーカイブ形態) を疑う。次で配備内容を実測する:
+  /opt/app/shared-conf/bin/deployment-overlay.sh browse
+#     対象ファイルが WAR の中にあるなら SHARED_CONF_OVERLAY=on を追加して再ビルドし、
+  /opt/app/shared-conf/bin/deployment-overlay.sh status
+#     で overlay が効いていることを確認する (deployment-overlay.md §5)
 
 # (8) 問題なければ残り 3 サービスへ展開
 ```
@@ -234,14 +250,18 @@ symlink 自体は残るが、アプリから見える内容は元通りになる
 同一の Dockerfile / linkmap.conf のまま、ビルド引数だけで
 「共有するイメージ」と「共有しないイメージ」を作り分けられる。
 
+**既定は `off` (共有なし)。** 何も指定しなければ従来どおりのイメージができる、
+という安全側の既定にしてある。共有したい場合だけ明示的に `on` を渡す。
+
 ```bash
-docker build --build-arg SHARED_CONF_SYMLINK=on  ...   # 既定 (共有あり)
-docker build --build-arg SHARED_CONF_SYMLINK=off ...   # 共有なし
+docker build ...                                       # 既定 (共有なし)
+docker build --build-arg SHARED_CONF_SYMLINK=off ...   # 同上 (明示)
+docker build --build-arg SHARED_CONF_SYMLINK=on  ...   # 共有あり
 ```
 
 ### 9.1 処理の分岐点
 
-| | `on` | `off` |
+| | `on` | `off` (既定) |
 |---|---|---|
 | `build-shared-links.sh` | 元ファイルを `defaults/` に退避 → `LINK` を `TARGET` への symlink に置換 → リンク先を検証 | **イメージを書き換えない**。`LINK` が実ファイルとして存在するかだけ検証 |
 | `shared-conf-entrypoint.sh` | EFS マウント待ち → 実体をシード (`link(2)`) → リンク解決を検証 → `exec` | `LINK` が実ファイルとして読めるかだけ検証 → `exec` |
@@ -278,7 +298,7 @@ CMD の書き分けや USER 指定の重複が発生し、両モードの差分�
 
 ### 9.4 想定する使いどころ
 
-- **段階導入**: 共有が必要なサービスだけ `on` でビルドし、残りは `off` のまま。
+- **段階導入**: 共有が必要なサービスだけ `on` でビルドし、残りは既定の `off` のまま。
   タスク定義もイメージ構成も変えずにサービス単位で切り替えられる
 - **切り戻し**: 共有機構に問題が出たとき、`off` で再ビルドすれば
   linkmap.conf を編集せずに従来のイメージへ戻せる (§8)
@@ -292,4 +312,53 @@ CMD の書き分けや USER 指定の重複が発生し、両モードの差分�
 `on`/`off`, `true`/`false`, `yes`/`no`, `1`/`0`, `enable(d)`/`disable(d)` を受け付け、
 **解釈できない値は黙って off 扱いにせずエラーにする** (`SHARED_CONF_SYMLINK=of`
 のようなタイプミスで共有が無効化されたまま気づかない事故を防ぐため)。
-この正規化は `SHARED_CONF_SEED` / `SHARED_CONF_STRICT` にも適用している。
+この正規化は `SHARED_CONF_SEED` / `SHARED_CONF_STRICT` / `SHARED_CONF_OVERLAY*` にも適用している。
+`SOURCE` / `MATCH` のような列挙値は `sc_enum` で同様に検証する。
+
+---
+
+## 10. 追加機構: Deployment Overlays (`SHARED_CONF_OVERLAY`)
+
+§6.3 の 3 番目のケース (WAR アーカイブが VFS に展開されて読まれる形態) は
+symlink では原理的に届かない。これを埋めるのが Deployment Overlays。
+詳細は [deployment-overlay.md](deployment-overlay.md) にあるが、
+設計上の位置づけだけここに残しておく。
+
+### 10.1 2 つの機構は直交している
+
+| | `SHARED_CONF_SYMLINK` | `SHARED_CONF_OVERLAY` |
+|---|---|---|
+| 既定 | `off` | `off` |
+| いつ効くか | ビルド時にイメージを書き換える | 実行時に管理操作を発行する |
+| 効く相手 | 展開済みディレクトリを読むアプリ | WAR アーカイブとして配備されたデプロイメント |
+| ビルド時/実行時の値の一致 | **必須** (イメージの中身と対) | 不要 (実行時だけの機構) |
+| 反映の仕方 | 常に最新を読む (symlink 解決) | 適用時点のコピー。再適用が必要 |
+| EFS 依存 | あり | `SOURCE=auto/target` ならあり |
+
+4 通りの組み合わせがすべて成立する。どちらも `off` の既定では、
+entrypoint は「対象ファイルがイメージ内に実ファイルとして存在するか」を
+確認するだけで即座に `exec` する = **導入前と同じ挙動**になる。
+
+### 10.2 なぜ「起動後にバックグラウンドで適用」なのか
+
+`deployment-overlay` は管理操作なので、サーバが起動していないと発行できない。
+選択肢は 2 つあった。
+
+| 案 | 判定 | 理由 |
+|---|---|---|
+| `embed-server` によるオフライン適用 (起動前) | ✗ | `standalone.xml` とコンテンツリポジトリへの書き込みが必須で、`readonlyRootFilesystem=true` では前提条件が厳しくなる。また起動シーケンスに CLI の JVM 起動時間が直列で乗る |
+| 起動後にバックグラウンドで適用 (**採用**) | ○ | `exec` を維持できるので SIGTERM が JBoss に直接届く。アプリの起動を待たせない。失敗してもアプリは元の設定で動き続けられる (`STRICT` で挙動を選べる) |
+| entrypoint が `standalone.sh` を子プロセスとして起動し、適用後に `wait` | ✗ | PID 1 がシェルになるため SIGTERM の転送を自前で実装することになり、ECS の停止処理が壊れやすくなる |
+
+代償は「起動直後に対象デプロイメントが 1 回再デプロイされる」こと。
+許容できない場合は `SHARED_CONF_OVERLAY_REDEPLOY=off` で
+反映を次回起動に寄せられる (deployment-overlay.md §7.2)。
+
+### 10.3 なぜ overlay をデプロイメントごとに分けるのか
+
+1 つの overlay を複数デプロイメントにリンクすると、
+その overlay が持つ全 content が全リンク先に適用される。
+デプロイメント A にしか存在しないパスの content が B にリンクされると、
+**B には元々無かったファイルが新規に追加される**。
+これを避けるため `<prefix>-<デプロイメント名>` で 1 対 1 に分けている。
+切り戻しもデプロイメント単位でできる。

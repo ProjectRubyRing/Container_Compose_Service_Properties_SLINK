@@ -7,8 +7,12 @@
 # 提供するもの:
 #   sc_log / sc_warn / sc_err   : ログ出力
 #   sc_flag <名前> <値>         : on/off 系フラグの正規化 (true/1/yes なども受ける)
+#   sc_enum <名前> <値> <候補…> : 列挙型パラメータの検証
 #   sc_expand <str>             : ${APP_ROOT} 等のトークン展開
-#   sc_each_entry <callback>    : linkmap を1行ずつ読み、callback LINK TARGET DEFAULT を呼ぶ
+#   sc_rel_path <link>          : LINK から APP_ROOT を除いた相対パス (先頭 / なし)
+#   sc_sanitize_name <str>      : 識別子として安全な文字列に変換
+#   sc_each_entry <callback>    : linkmap を1行ずつ読み、
+#                                 callback LINK TARGET DEFAULT OVERLAY_PATH を呼ぶ
 #
 # 必須環境変数 : APP_ROOT
 # 任意環境変数 : SHARED_CONF_DIR (既定 /mnt/logs/tmp)
@@ -43,6 +47,25 @@ sc_flag() {
     esac
 }
 
+# ---------------------------------------------------------------------------
+# sc_enum <名前> <値> <候補...>
+#   列挙型のパラメータ (overlay の match/source など) を検証してそのまま出力する。
+#   フラグ同様、タイプミスを黙って既定値に落とさずエラーにする。
+#
+#   使い方:  MODE=$(sc_enum MODE "${MODE}" name path) || exit 1
+# ---------------------------------------------------------------------------
+sc_enum() {
+    _en_name="$1"; _en_val="$2"; shift 2
+    for _en_c in "$@"; do
+        if [ "$_en_val" = "$_en_c" ]; then
+            printf '%s' "$_en_val"
+            return 0
+        fi
+    done
+    sc_err "${_en_name} の値が不正です: '${_en_val}'  (指定可能: $*)"
+    return 1
+}
+
 : "${SHARED_CONF_DIR:=/mnt/logs/tmp}"
 : "${DEFAULTS_DIR:=/opt/app/shared-conf/defaults}"
 : "${SHARED_CONF_LINKMAP:=/opt/app/shared-conf/linkmap.conf}"
@@ -60,8 +83,35 @@ sc_expand() {
 }
 
 # ---------------------------------------------------------------------------
+# sc_rel_path <link>
+#   LINK から APP_ROOT を取り除いた相対パス (先頭 '/' なし) を返す。
+#   APP_ROOT 配下でない場合は basename を返す。
+#   DEFAULT の自動決定と、Deployment Overlay のアーカイブ内パス既定値の
+#   両方がこれを使う (= 同じ規則で決まる)。
+# ---------------------------------------------------------------------------
+sc_rel_path() {
+    _rp=${1#"${APP_ROOT}"}
+    case "$_rp" in
+        /*) printf '%s' "${_rp#/}" ;;
+        *)  basename "$1" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# sc_sanitize_name <string>
+#   deployment 名などを、識別子として安全な文字だけに落とす
+#   ([A-Za-z0-9._-] 以外を '_' に置換)。overlay 名の生成に使う。
+# ---------------------------------------------------------------------------
+sc_sanitize_name() {
+    printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+# ---------------------------------------------------------------------------
 # sc_each_entry <callback>
-#   linkmap を読み、各エントリについて  callback <LINK> <TARGET> <DEFAULT>  を呼ぶ。
+#   linkmap を読み、各エントリについて
+#     callback <LINK> <TARGET> <DEFAULT> <OVERLAY_PATH>
+#   を呼ぶ。OVERLAY_PATH は 4 列目 (省略/'-' なら '-' のまま渡す。
+#   実際のアーカイブ内パスの決定は deployment-overlay.sh 側の責務)。
 #   callback が非0を返したら全体を非0で終了させるため sc_each_entry も非0を返す。
 # ---------------------------------------------------------------------------
 sc_each_entry() {
@@ -94,15 +144,11 @@ sc_each_entry() {
         _link=$(sc_expand "$1")
         _target=$(sc_expand "$2")
         _default=${3:--}
+        _ovlpath=${4:--}
 
         if [ "$_default" = "-" ]; then
             # ${DEFAULTS_DIR} + (LINK から APP_ROOT を取り除いた相対パス)
-            _rel=${_link#"${APP_ROOT}"}
-            case "$_rel" in
-                /*) : ;;
-                *)  _rel="/$(basename "$_link")" ;;   # APP_ROOT 配下でない場合は basename
-            esac
-            _default="${DEFAULTS_DIR}${_rel}"
+            _default="${DEFAULTS_DIR}/$(sc_rel_path "$_link")"
         else
             _default=$(sc_expand "$_default")
         fi
@@ -120,7 +166,15 @@ sc_each_entry() {
             continue
         fi
 
-        if ! "$_cb" "$_link" "$_target" "$_default"; then
+        # OVERLAY_PATH は「アーカイブ内の相対パス」なので絶対パスは誤り
+        case "$_ovlpath" in
+            /*)
+                sc_err "${SHARED_CONF_LINKMAP}:${_lineno}: OVERLAY_PATH (4列目) はアーカイブ内の相対パスです。先頭の '/' を外してください: ${_ovlpath}"
+                _rc=1
+                continue ;;
+        esac
+
+        if ! "$_cb" "$_link" "$_target" "$_default" "$_ovlpath"; then
             _rc=1
         fi
     done < "${SHARED_CONF_LINKMAP}"

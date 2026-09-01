@@ -6,18 +6,33 @@
 #   front:  docker build --build-arg APP_ROOT=/webapp/webapp9mf02 ...
 #   back :  docker build --build-arg APP_ROOT=/webapp/webapp9mb02 ...
 #
-# ---- symlink を作る / 作らない の切り替え ----------------------------------
-#   SHARED_CONF_SYMLINK=on  (既定)
-#       プロパティファイルを EFS 上の 1 ファイルへの symlink に置き換える。
-#       実行時は entrypoint が実体の生成とリンク検証を行う。
-#   SHARED_CONF_SYMLINK=off
+# ---- 2 つの機構は独立したビルド引数で制御する (どちらも既定 off) ------------
+#
+#   SHARED_CONF_SYMLINK=off  (既定)
 #       symlink を作らず、イメージ内の実ファイルをそのまま使う (従来のイメージ)。
 #       ビルド時は対象ファイルの存在確認のみ。実行時も EFS に触れない。
+#   SHARED_CONF_SYMLINK=on
+#       プロパティファイルを EFS 上の 1 ファイルへの symlink に置き換える。
+#       実行時は entrypoint が実体の生成とリンク検証を行う。
 #
+#   SHARED_CONF_OVERLAY=off  (既定)
+#       Deployment Overlays を使わない。
+#   SHARED_CONF_OVERLAY=on
+#       起動後に jboss-cli.sh で Deployment Overlay を適用し、配備済み WAR
+#       アーカイブを書き換えずに同名の設定ファイルを上書きする。
+#       アーカイブ内のパスは deployment browse-content で実測して特定する。
+#
+#   4 通りの組み合わせすべてが有効。よく使うのは次の 2 つ:
+#
+#   # 従来どおり (何も変えない)
 #   docker build --build-arg APP_ROOT=/webapp/webapp9mf02 \
-#                --build-arg SHARED_CONF_SYMLINK=on  -t <repo>/intra-web-front:1.0.0 .
+#                -t <repo>/intra-web-front:1.0.0 .
+#
+#   # 共有 symlink + WAR への overlay を両方有効化
 #   docker build --build-arg APP_ROOT=/webapp/webapp9mf02 \
-#                --build-arg SHARED_CONF_SYMLINK=off -t <repo>/intra-web-front:1.0.0-nolink .
+#                --build-arg SHARED_CONF_SYMLINK=on \
+#                --build-arg SHARED_CONF_OVERLAY=on \
+#                -t <repo>/intra-web-front:1.0.0-shared .
 #
 # 配置場所は「アプリの資材 (/webapp/webapp9mXX) を COPY し終えた後」。
 # ここより後で /webapp 配下を上書きすると symlink が消えるので注意。
@@ -32,32 +47,42 @@
 ARG APP_ROOT=/webapp/webapp9mf02
 ARG APP_UID=6301
 ARG APP_GID=6302
-ARG SHARED_CONF_SYMLINK=on
+ARG SHARED_CONF_SYMLINK=off
+ARG SHARED_CONF_OVERLAY=off
 
 # 実行時にも同じ値が必要 (entrypoint が linkmap を展開し、ビルド時と同じ
 # モードで動く必要があるため) → ENV に固定する。
 # SHARED_CONF_SYMLINK はイメージの中身と対でなければならないので、
 # タスク定義の environment で上書きしないこと。
+# SHARED_CONF_OVERLAY は実行時だけの機構なので、タスク定義側で
+# on/off を切り替えても整合性は崩れない (運用で切り替えたい場合に使える)。
 ENV APP_ROOT=${APP_ROOT} \
     SHARED_CONF_SYMLINK=${SHARED_CONF_SYMLINK} \
+    SHARED_CONF_OVERLAY=${SHARED_CONF_OVERLAY} \
     SHARED_CONF_DIR=/mnt/logs/tmp \
     DEFAULTS_DIR=/opt/app/shared-conf/defaults \
     SHARED_CONF_LINKMAP=/opt/app/shared-conf/linkmap.conf \
     SHARED_CONF_SEED=on \
     SHARED_CONF_STRICT=on \
-    SHARED_CONF_MODE=0664
+    SHARED_CONF_MODE=0664 \
+    JBOSS_HOME=/opt/eap \
+    SHARED_CONF_CLI_CONTROLLER=remote+http://127.0.0.1:9990
 
 # ---- 共有設定ファイル機構の資材を配置 --------------------------------------
 COPY --chown=root:root image/bin/linkmap-lib.sh            /opt/app/shared-conf/bin/
 COPY --chown=root:root image/bin/build-shared-links.sh     /opt/app/shared-conf/bin/
 COPY --chown=root:root image/bin/shared-conf-entrypoint.sh /opt/app/shared-conf/bin/
+COPY --chown=root:root image/bin/deployment-overlay.sh     /opt/app/shared-conf/bin/
 COPY --chown=root:root image/linkmap.conf                  /opt/app/shared-conf/linkmap.conf
 
 # ---- ★ 本体: /webapp 配下のプロパティファイルを symlink に置換 -------------
 #      readonlyRootFilesystem=true では実行時に作れないため、ここで焼き込む。
 #      同時に元ファイルを /opt/app/shared-conf/defaults に初期値として退避する。
-#      SHARED_CONF_SYMLINK=off の場合は置換も退避も行わず、対象ファイルが
+#      SHARED_CONF_SYMLINK=off (既定) の場合は置換も退避も行わず、対象ファイルが
 #      実ファイルとして存在することの確認だけを行う (ENV 経由で伝わる)。
+#      SHARED_CONF_OVERLAY=on の場合は、値の妥当性と
+#      deployment-overlay.sh の同梱だけをビルド時に検証する
+#      (overlay 自体は実行時に適用されるので、イメージは変更されない)。
 RUN set -eux; \
     chmod 0755 /opt/app/shared-conf/bin/*.sh; \
     APP_UID="${APP_UID}" APP_GID="${APP_GID}" \
@@ -66,8 +91,12 @@ RUN set -eux; \
 
 # ---- ENTRYPOINT を差し替え --------------------------------------------------
 #      元の起動コマンドは CMD 側に移す (entrypoint が exec "$@" で引き継ぐ)。
-#      SHARED_CONF_SYMLINK=off のイメージでも同じ entrypoint でよい
-#      (EFS 待ち・シード・リンク検証はスキップされる)。
+#      symlink=off / overlay=off のイメージでも同じ entrypoint でよい
+#      (EFS 待ち・シード・リンク検証・overlay 適用はすべてスキップされる)。
+#
+#      ★ SHARED_CONF_OVERLAY=on にする場合は、jboss-cli が接続できるよう
+#        管理インタフェースを起動しておくこと (-bmanagement 0.0.0.0 か、
+#        127.0.0.1 で listen させて SHARED_CONF_CLI_CONTROLLER を合わせる)。
 USER ${APP_UID}:${APP_GID}
 ENTRYPOINT ["/opt/app/shared-conf/bin/shared-conf-entrypoint.sh"]
 CMD ["/opt/eap/bin/standalone.sh", "-b", "0.0.0.0", "-bmanagement", "0.0.0.0"]

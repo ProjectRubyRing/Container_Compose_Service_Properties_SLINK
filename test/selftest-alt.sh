@@ -37,12 +37,16 @@ setup() {   # $1=role $2=service $3=APP_ROOT
     printf 'date.format=yyyy/MM/dd\n' > "$root/servlets/jp/co/sample/base/date_config.properties"
 }
 
+# ALT-A / ALT-B はどちらも symlink 共有が前提なので、
+# 既定 (off) ではなく SHARED_CONF_SYMLINK=on を明示する。
 build() {   # $1=tag $2=APP_ROOT $3=linkmap
     APP_ROOT="$2" DEFAULTS_DIR="$SB/defaults/$1" SHARED_CONF_LINKMAP="$3" \
+        SHARED_CONF_SYMLINK=on \
         sh "$SB/opt/app/shared-conf/bin/build-shared-links.sh" >/dev/null
 }
 start() {   # $1=tag $2=APP_ROOT $3=linkmap $4=SHARED_CONF_DIR
     APP_ROOT="$2" DEFAULTS_DIR="$SB/defaults/$1" SHARED_CONF_LINKMAP="$3" \
+        SHARED_CONF_SYMLINK=on \
         SHARED_CONF_DIR="$4" SHARED_CONF_MOUNT="$SB/mnt/logs" SHARED_CONF_WAIT=2 \
         sh "$SB/opt/app/shared-conf/bin/shared-conf-entrypoint.sh" true >/dev/null
 }

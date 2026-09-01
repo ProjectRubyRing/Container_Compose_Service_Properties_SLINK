@@ -52,7 +52,9 @@ setup_container() {   # $1 = front|back , $2 = APP_ROOT , $3 = 初期値の中�
 }
 
 run_build() {         # $1 = role , $2 = APP_ROOT
+    # SHARED_CONF_SYMLINK の既定値は off なので、共有ありのビルドは明示指定する
     APP_ROOT="$2" \
+    SHARED_CONF_SYMLINK=on \
     SHARED_CONF_DIR="$SHARED_CONF_DIR" \
     DEFAULTS_DIR="$DEFAULTS_DIR_BASE/$1" \
     SHARED_CONF_LINKMAP="$SB/opt/$1/linkmap.conf" \
@@ -62,6 +64,7 @@ run_build() {         # $1 = role , $2 = APP_ROOT
 run_entrypoint() {    # $1 = role , $2 = APP_ROOT , 残り = 起動コマンド
     local role="$1" root="$2"; shift 2
     APP_ROOT="$root" \
+    SHARED_CONF_SYMLINK=on \
     SHARED_CONF_DIR="$SHARED_CONF_DIR" \
     DEFAULTS_DIR="$DEFAULTS_DIR_BASE/$role" \
     SHARED_CONF_LINKMAP="$SB/opt/$role/linkmap.conf" \
@@ -120,7 +123,13 @@ chk "同時起動後も実体は1ファイル"               '[ "$(find "$SHARED
 chk "一時ファイルが残っていない"                '[ -z "$(find "$SHARED_CONF_DIR" -name ".seed.*" -print -quit)" ]'
 chk "内容が初期値どおり"                        '[ "$(cat "$REAL")" = "date.format=yyyy/MM/dd" ]'
 
-head1 "7. 異常系: 実体を消して STRICT=on / SEED=off なら起動失敗"
+head1 "7. 既定は off (明示しないと symlink 化されない)"
+setup_container defaults "$SB/webapp/defaults" "date.format=yyyy/MM/dd"
+APP_ROOT="$SB/webapp/defaults" SHARED_CONF_DIR="$SHARED_CONF_DIR" DEFAULTS_DIR="$DEFAULTS_DIR_BASE/defaults" SHARED_CONF_LINKMAP="$SB/opt/defaults/linkmap.conf" sh "$SB/opt/app/shared-conf/bin/build-shared-links.sh" >/dev/null 2>&1
+chk "SHARED_CONF_SYMLINK 未指定なら symlink を作らない" '[ ! -L "$SB/webapp/defaults/servlets/jp/co/sample/base/date_config.properties" ]'
+chk "SHARED_CONF_SYMLINK 未指定なら実ファイルのまま"    '[ -f "$SB/webapp/defaults/servlets/jp/co/sample/base/date_config.properties" ]'
+
+head1 "8. 異常系: 実体を消して STRICT=on / SEED=off なら起動失敗"
 rm -f "$REAL"
 set +e
 SHARED_CONF_SEED=off run_entrypoint front "$FRONT" true >/dev/null 2>&1

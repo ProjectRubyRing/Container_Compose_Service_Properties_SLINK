@@ -8,6 +8,7 @@
 #   3. off の帰結: front / back の設定は共有されない (各イメージが独立)
 #   4. 取り違え検知: ビルド時と実行時でフラグが食い違えば起動を中止する
 #   5. フラグ解釈: true/1/no などの表記揺れを吸収し、不正値はエラーにする
+#   6. 既定値    : SHARED_CONF_SYMLINK 未指定なら off として扱われる
 #
 # 使い方:  bash test/selftest-nolink.sh
 # ============================================================================
@@ -128,6 +129,30 @@ chk "false は off として扱われる"               '[ ! -L "$SB/webapp/flag
 chk "1 は on として扱われる"                    '[ -L "$SB/webapp/flag-one/$REL" ]'
 chk "不正値 (maybe) はビルドを失敗させる"       '[ "$rc_bad" -ne 0 ]'
 chk "不正値のときイメージは書き換えられない"    '[ ! -L "$SB/webapp/flag-bad/$REL" ]'
+
+head1 "5b. 未指定時の既定値は off"
+# 先行するテストが $SHARED_CONF_DIR を作ってしまっているので、
+# 「EFS に触れない」ことを見るために専用の未作成ディレクトリを使う。
+NONE_DIR="$SB/mnt/logs-none/tmp"
+setup_container flag-none "$SB/webapp/flag-none" "x=1"
+APP_ROOT="$SB/webapp/flag-none" \
+SHARED_CONF_DIR="$NONE_DIR" \
+DEFAULTS_DIR="$DEFAULTS_DIR_BASE/flag-none" \
+SHARED_CONF_LINKMAP="$SB/opt/flag-none/linkmap.conf" \
+sh "$SB/opt/app/shared-conf/bin/build-shared-links.sh" >/dev/null 2>&1
+set +e
+APP_ROOT="$SB/webapp/flag-none" \
+SHARED_CONF_DIR="$NONE_DIR" \
+DEFAULTS_DIR="$DEFAULTS_DIR_BASE/flag-none" \
+SHARED_CONF_LINKMAP="$SB/opt/flag-none/linkmap.conf" \
+SHARED_CONF_WAIT=2 \
+sh "$SB/opt/app/shared-conf/bin/shared-conf-entrypoint.sh" true >/dev/null 2>&1
+rc_none=$?
+set -e
+chk "ビルド: 未指定なら symlink を作らない"     '[ ! -L "$SB/webapp/flag-none/$REL" ]'
+chk "ビルド: 未指定なら defaults も作らない"    '[ ! -e "$DEFAULTS_DIR_BASE/flag-none" ]'
+chk "実行時: 未指定でも EFS に触れず起動する"   '[ "$rc_none" -eq 0 ]'
+chk "実行時: 未指定なら EFS 側に何も作らない"   '[ ! -d "$NONE_DIR" ]'
 
 head1 "6. 異常系: 対象ファイルが無いのに off ビルド"
 setup_container missing "$SB/webapp/missing" "x=1"

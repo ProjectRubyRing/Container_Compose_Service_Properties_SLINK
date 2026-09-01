@@ -2,8 +2,11 @@
 # Dockerfile.front.example -- 全体像がわかるようにした参考 Dockerfile (front)
 #   back は APP_ROOT を /webapp/webapp9mb02 に変えるだけ。
 #
-#   symlink あり:  docker build --build-arg SHARED_CONF_SYMLINK=on  ... (既定)
-#   symlink なし:  docker build --build-arg SHARED_CONF_SYMLINK=off ...
+#   何もしない (既定):   docker build ...
+#   symlink 共有:        docker build --build-arg SHARED_CONF_SYMLINK=on ...
+#   WAR への overlay:    docker build --build-arg SHARED_CONF_OVERLAY=on ...
+#   両方:                docker build --build-arg SHARED_CONF_SYMLINK=on \
+#                                     --build-arg SHARED_CONF_OVERLAY=on ...
 # ============================================================================
 FROM registry.access.redhat.com/ubi9/ubi:9.8
 
@@ -11,7 +14,8 @@ ARG APP_UID=6301
 ARG APP_GID=6302
 ARG APP_ROOT=/webapp/webapp9mf02
 ARG SERVICE_NAME=intra-web
-ARG SHARED_CONF_SYMLINK=on
+ARG SHARED_CONF_SYMLINK=off
+ARG SHARED_CONF_OVERLAY=off
 
 # ---- OpenJDK 21 for RHEL / JBoss EAP 8.1 (既存手順のまま) -------------------
 RUN dnf -y install java-21-openjdk-headless && dnf clean all
@@ -33,16 +37,21 @@ COPY --chown=${APP_UID}:${APP_GID} app/ ${APP_ROOT}/
 # ↓↓↓ ここから今回の追加分 (image/Dockerfile.snippet と同じ内容) ↓↓↓
 # ============================================================================
 ENV APP_ROOT=${APP_ROOT} \
+    SHARED_CONF_SYMLINK=${SHARED_CONF_SYMLINK} \
+    SHARED_CONF_OVERLAY=${SHARED_CONF_OVERLAY} \
     SHARED_CONF_DIR=/mnt/logs/tmp \
     DEFAULTS_DIR=/opt/app/shared-conf/defaults \
     SHARED_CONF_LINKMAP=/opt/app/shared-conf/linkmap.conf \
     SHARED_CONF_SEED=on \
     SHARED_CONF_STRICT=on \
-    SHARED_CONF_MODE=0664
+    SHARED_CONF_MODE=0664 \
+    JBOSS_HOME=/opt/eap \
+    SHARED_CONF_CLI_CONTROLLER=remote+http://127.0.0.1:9990
 
 COPY image/bin/linkmap-lib.sh            /opt/app/shared-conf/bin/
 COPY image/bin/build-shared-links.sh     /opt/app/shared-conf/bin/
 COPY image/bin/shared-conf-entrypoint.sh /opt/app/shared-conf/bin/
+COPY image/bin/deployment-overlay.sh     /opt/app/shared-conf/bin/
 COPY image/linkmap.conf                  /opt/app/shared-conf/linkmap.conf
 
 RUN set -eux; \
@@ -53,4 +62,5 @@ RUN set -eux; \
 
 USER ${APP_UID}:${APP_GID}
 ENTRYPOINT ["/opt/app/shared-conf/bin/shared-conf-entrypoint.sh"]
-CMD ["/opt/eap/bin/standalone.sh", "-b", "0.0.0.0"]
+# SHARED_CONF_OVERLAY=on にする場合は管理インタフェースが必要
+CMD ["/opt/eap/bin/standalone.sh", "-b", "0.0.0.0", "-bmanagement", "0.0.0.0"]

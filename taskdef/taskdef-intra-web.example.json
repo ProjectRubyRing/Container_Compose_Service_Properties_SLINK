@@ -5,7 +5,9 @@
     "変更点は environment に APP_ROOT / SHARED_CONF_* を明示する程度 (Dockerfile の ENV でも可)。",
     "他の 3 サービス (intra-api / inter-api / sf-api) も同じ形。",
     "SHARED_CONF_SYMLINK (symlink を作る/作らない) はイメージの中身と対になるビルド引数なので、",
-    "ここでは指定しない。Dockerfile の ARG/ENV に任せること (食い違うと entrypoint が起動を中止する)。"
+    "ここでは指定しない。Dockerfile の ARG/ENV に任せること (食い違うと entrypoint が起動を中止する)。",
+    "SHARED_CONF_OVERLAY (Deployment Overlays) は実行時だけの機構なので、ここで on/off しても安全。",
+    "既定はどちらも off = 従来どおりの挙動になる。"
   ],
   "family": "intra-web",
   "networkMode": "awsvpc",
@@ -37,7 +39,19 @@
       "name": "ssm-lib"
     },
     { "name": "ssm-log" },
-    { "name": "app-tmp" }
+    { "name": "app-tmp" },
+    {
+      "_comment": [
+        "★ SHARED_CONF_OVERLAY=on にする場合のみ必要。",
+        "deployment-overlay は standalone.xml とコンテンツリポジトリ (standalone/data) を",
+        "更新するため、JBoss のサーバベースディレクトリが書き込み可能でなければならない。",
+        "readonlyRootFilesystem=true では以下のいずれかが必要:",
+        "  (a) イメージ側で jboss.server.base.dir を書き込み可能なパスに向け、そこへ空ボリュームを当てる",
+        "  (b) 起動時に $JBOSS_HOME/standalone の内容をこのボリュームへコピーしてから起動する",
+        "詳細は docs/deployment-overlay.md §4。"
+      ],
+      "name": "eap-standalone"
+    }
   ],
 
   "containerDefinitions": [
@@ -54,7 +68,16 @@
         { "name": "SHARED_CONF_DIR",    "value": "/mnt/logs/tmp" },
         { "name": "SHARED_CONF_SEED",   "value": "on" },
         { "name": "SHARED_CONF_STRICT", "value": "on" },
-        { "name": "SHARED_CONF_MODE",   "value": "0664" }
+        { "name": "SHARED_CONF_MODE",   "value": "0664" },
+
+        { "_comment": "↓ Deployment Overlays (既定 off)。使う場合だけ on にする。",
+          "name": "SHARED_CONF_OVERLAY",           "value": "off" },
+        { "name": "SHARED_CONF_OVERLAY_MATCH",     "value": "name" },
+        { "name": "SHARED_CONF_OVERLAY_BROWSE",    "value": "on" },
+        { "name": "SHARED_CONF_OVERLAY_SOURCE",    "value": "auto" },
+        { "name": "SHARED_CONF_OVERLAY_REDEPLOY",  "value": "on" },
+        { "name": "SHARED_CONF_OVERLAY_STRICT",    "value": "off" },
+        { "name": "SHARED_CONF_CLI_CONTROLLER",    "value": "remote+http://127.0.0.1:9990" }
       ],
 
       "mountPoints": [
@@ -91,7 +114,8 @@
         { "name": "SHARED_CONF_DIR",    "value": "/mnt/logs/tmp" },
         { "name": "SHARED_CONF_SEED",   "value": "on" },
         { "name": "SHARED_CONF_STRICT", "value": "on" },
-        { "name": "SHARED_CONF_MODE",   "value": "0664" }
+        { "name": "SHARED_CONF_MODE",   "value": "0664" },
+        { "name": "SHARED_CONF_OVERLAY", "value": "off" }
       ],
 
       "mountPoints": [
