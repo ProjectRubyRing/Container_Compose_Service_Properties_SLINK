@@ -16,6 +16,11 @@
 #      -> ビルド時点では dangling (EFS 未マウント) だが、シンボリックリンクは
 #        アクセス時に解決されるため実行時にマウントされていれば正しく解決される
 #
+#   1) の実ファイルも DEFAULT も無い場合は、警告だけ出して 2) の symlink 作成を
+#   続行する (シード元なしのビルド)。この構成では実体を EFS 側にあらかじめ
+#   用意しておくこと (ec2/init-shared-conf.sh)。用意が無ければ実行時の
+#   entrypoint が dangling を検出して起動を中止する。
+#
 # off の場合はイメージを一切書き換えない。linkmap の各 LINK が
 # 「実ファイルとして存在するか」だけを検証する (ビルドの取り違え検知)。
 # 実行時の entrypoint も同じフラグを見て、EFS 待ち・シード・リンク検証を
@@ -120,13 +125,18 @@ _build_one() {
         cp -p "$_link" "$_default"
         sc_log "default をイメージから退避  : ${_link} -> ${_default}"
     else
-        sc_err "シード元が見つかりません。${_link} が実ファイルとして存在しないなら"
-        sc_err "  ${_default} を COPY で用意してください。"
-        return 1
+        # 実ファイルも DEFAULT も無い場合はシード元なしとして扱い、
+        # symlink の作成だけは続行する (実体は EFS 側で用意する運用)。
+        sc_warn "シード元がありません (初期値なしで symlink だけ作成します): ${_link}"
+        sc_warn "  実行時までに ${_target} を EFS 上に用意してください"
+        sc_warn "  (ec2/init-shared-conf.sh 等)。イメージに初期値を持たせる場合は"
+        sc_warn "  ${_default} を COPY してください。"
     fi
 
-    chown "${APP_UID}:${APP_GID}" "$_default"
-    chmod "${DEFAULT_FILE_MODE}" "$_default"
+    if [ -e "$_default" ]; then
+        chown "${APP_UID}:${APP_GID}" "$_default"
+        chmod "${DEFAULT_FILE_MODE}" "$_default"
+    fi
 
     # ---- 2) LINK をシンボリックリンクに差し替え ----------------------------
     mkdir -p "$(dirname "$_link")"

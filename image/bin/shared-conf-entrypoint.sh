@@ -168,6 +168,8 @@ _seed_one() {
             sc_log "初期値が無いためイメージ内の実ファイルをシード元にします: ${_link}"
         else
             sc_err "初期値が読めません: ${_default}"
+            sc_err "  シード元を持たないビルド (実ファイルなしで symlink 化) の場合は、"
+            sc_err "  ${_target} を EFS 上に用意してください (ec2/init-shared-conf.sh 等)。"
             return 1
         fi
     fi
