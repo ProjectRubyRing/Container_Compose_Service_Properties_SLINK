@@ -137,6 +137,21 @@ rc=$?
 set -e
 chk "dangling リンクで entrypoint が非0終了"    '[ "$rc" -ne 0 ]'
 
+head1 "9. 実ファイルが無くても symlink を作成できる"
+NOFILE="$SB/webapp/webapp9mn02"
+mkdir -p "$SB/opt/nofile"
+cp "$HERE/image/linkmap.conf" "$SB/opt/nofile/linkmap.conf"
+LINK_N="$NOFILE/servlets/jp/co/sample/base/date_config.properties"
+# 実ファイル (LINK の元ファイル) も DEFAULT も一切用意せずにビルドする
+run_build nofile "$NOFILE" 2>&1 | sed 's/^/  | /'
+chk "実ファイルが無くてもビルドが成功する"      '[ -L "$LINK_N" ]'
+chk "リンク先は linkmap どおり"                 '[ "$(readlink "$LINK_N")" = "$REAL" ]'
+chk "初期値は作られない (シード元なし)"         '[ ! -e "$DEFAULTS_DIR_BASE/nofile/servlets/jp/co/sample/base/date_config.properties" ]'
+# 実体は EC2 側 (ec2/init-shared-conf.sh 相当) で用意しておく運用になる
+printf '%s\n' "date.format=yyyy/MM/dd" > "$REAL"
+chk "EFS 上の実体があれば起動できる"            'run_entrypoint nofile "$NOFILE" true >/dev/null 2>&1'
+chk "リンク経由で実体が読める"                  '[ "$(cat "$LINK_N")" = "$(cat "$REAL")" ]'
+
 echo
 echo "========================================================"
 echo " PASS=$PASS  FAIL=$FAIL"
