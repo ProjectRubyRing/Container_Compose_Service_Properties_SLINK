@@ -239,8 +239,16 @@ sc_build_sources() {
 
     : > "${SC_WORK}/sources.tsv"
     _ov_srcrc=0
+    _ov_dirskip=0
     while IFS="${SC_TABCHR}" read -r _ov_link _ov_target _ov_default _ov_ovlpath; do
         [ -z "${_ov_link}" ] && continue
+
+        # Deployment Overlay はファイル内容の上書き。ディレクトリ共有は symlink 側だけ。
+        if [ -d "${_ov_link}" ] || [ -d "${_ov_target}" ] || { [ -d "${_ov_default}" ] && [ ! -L "${_ov_default}" ]; }; then
+            sc_log "ディレクトリのため overlay 対象外: ${_ov_link}"
+            _ov_dirskip=$((_ov_dirskip + 1))
+            continue
+        fi
 
         _ov_src=""
         if ! _ov_src=$(sc_resolve_source "${_ov_link}" "${_ov_target}"); then
@@ -275,6 +283,10 @@ sc_build_sources() {
     done < "${SC_WORK}/entries.tsv"
 
     if [ ! -s "${SC_WORK}/sources.tsv" ]; then
+        if [ "${_ov_dirskip}" -gt 0 ]; then
+            sc_log "overlay 対象のファイルエントリはありません (ディレクトリ ${_ov_dirskip} 件は symlink のみ)"
+            return 0
+        fi
         sc_err "オーバレイ対象のエントリがありません (linkmap: ${SHARED_CONF_LINKMAP})"
         return 1
     fi
@@ -365,6 +377,9 @@ sc_cmd_apply() {
     sc_precheck
     sc_wait_ready || return 1
     sc_build_sources || return 1
+    if [ ! -s "${SC_WORK}/sources.tsv" ]; then
+        return 0
+    fi
 
     _ov_deps=$(sc_list_deployments) || return 1
     if [ -z "${_ov_deps}" ]; then

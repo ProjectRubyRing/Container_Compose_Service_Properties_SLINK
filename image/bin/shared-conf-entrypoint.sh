@@ -135,15 +135,22 @@ else
 fi
 
 # ===========================================================================
-# 2) 実体ファイルのシード (存在しない場合のみ / アトミック)
+# 2) 実体のシード (存在しない場合のみ / アトミック)
 #    8 コンテナ (4 サービス x front/back) が同時起動しても壊れないよう、
-#    「一時ファイルを作ってから link(2) で公開する」方式を使う。
-#    link(2) は NFSv4 上でもアトミックで、既に存在すれば EEXIST で失敗する。
+#    ファイルは「一時ファイルを作ってから link(2) で公開する」。
+#    ディレクトリは hardlink できないため、同じディレクトリ内の
+#    mv -T (GNU coreutils / RHEL 9) で公開する。どちらも既にあれば失敗し、
+#    先に作った方を残す (= タスク再起動で内容は維持される)。
 # ===========================================================================
 _seed_one() {
     _link="$1"; _target="$2"; _default="$3"
 
     if [ -e "$_target" ]; then
+        # ディレクトリは cmp できない。存在すれば中身を維持する。
+        if [ -d "$_target" ]; then
+            sc_log "既存を維持: ${_target}"
+            return 0
+        fi
         # 既存を尊重 (= タスク再起動で内容が維持される)。
         # ただしイメージ同梱の初期値と差異があることは INFO として可視化しておく。
         if [ -r "$_default" ] && ! cmp -s "$_default" "$_target"; then
@@ -163,9 +170,9 @@ _seed_one() {
     # overlay だけ使う構成のために、イメージ内の実ファイルにもフォールバックする。
     _seed_src="$_default"
     if [ ! -r "$_seed_src" ]; then
-        if [ -f "$_link" ] && [ ! -L "$_link" ]; then
+        if [ ! -L "$_link" ] && { [ -f "$_link" ] || [ -d "$_link" ]; }; then
             _seed_src="$_link"
-            sc_log "初期値が無いためイメージ内の実ファイルをシード元にします: ${_link}"
+            sc_log "初期値が無いためイメージ内の実体をシード元にします: ${_link}"
         else
             sc_err "初期値が読めません: ${_default}"
             sc_err "  シード元を持たないビルド (実ファイルなしで symlink 化) の場合は、"
@@ -178,6 +185,25 @@ _seed_one() {
     mkdir -p "$_dir" 2>/dev/null || true
 
     _tmp="${_dir}/.seed.$$.$(date +%s).tmp"
+    rm -rf "$_tmp" 2>/dev/null || true
+
+    # ディレクトリは link(2) できない。コピー完了後に mv -T で名前を公開する。
+    # 先に公開された方があると mv は失敗するので、その実体は消さない。
+    if [ -d "$_seed_src" ] && [ ! -L "$_seed_src" ]; then
+        if ! cp -a --no-preserve=ownership "$_seed_src" "$_tmp" 2>/dev/null; then
+            sc_err "${_dir} に書き込めません。EFS の所有者/権限 (6301:6302) を確認してください。"
+            rm -rf "$_tmp" 2>/dev/null || true
+            return 1
+        fi
+        if mv -T "$_tmp" "$_target" 2>/dev/null; then
+            sc_log "実体を初期生成しました: ${_target} (from ${_seed_src})"
+        else
+            sc_log "実体は他コンテナが先に生成済み: ${_target}"
+            rm -rf "$_tmp" 2>/dev/null || true
+        fi
+        return 0
+    fi
+
     if ! cp "$_seed_src" "$_tmp" 2>/dev/null; then
         sc_err "${_dir} に書き込めません。EFS の所有者/権限 (6301:6302) を確認してください。"
         rm -f "$_tmp" 2>/dev/null || true
@@ -225,6 +251,14 @@ _verify_link_one() {
         sc_err "読み取り権限がありません: ${_link} (uid=$(id -u) gid=$(id -g))"
         return 1
     fi
+    if [ -d "$_link" ]; then
+        if [ ! -x "$_link" ]; then
+            sc_err "ディレクトリを辿れません: ${_link} (uid=$(id -u) gid=$(id -g))"
+            return 1
+        fi
+        sc_log "検証OK: ${_link} -> ${_target} (directory)"
+        return 0
+    fi
     sc_log "検証OK: ${_link} -> ${_target} ($(wc -c < "$_link" | tr -d ' ') bytes)"
     return 0
 }
@@ -237,6 +271,14 @@ _check_plain_one() {
         sc_err "  イメージが SHARED_CONF_SYMLINK=on でビルドされている可能性があります。"
         sc_err "  ビルド時と実行時で値を揃えてください (Dockerfile の ARG/ENV を確認)。"
         return 1
+    fi
+    if [ -d "$_link" ]; then
+        if [ ! -r "$_link" ] || [ ! -x "$_link" ]; then
+            sc_err "ディレクトリを辿れません: ${_link} (uid=$(id -u) gid=$(id -g))"
+            return 1
+        fi
+        sc_log "検証OK: ${_link} (イメージ内の実ディレクトリ)"
+        return 0
     fi
     if [ ! -f "$_link" ]; then
         sc_err "ファイルが存在しません: ${_link}"

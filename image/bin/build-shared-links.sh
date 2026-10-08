@@ -10,19 +10,19 @@
 #   on         : symlink を作成する = EFS 上の 1 ファイルを共有する構成
 #
 # on の場合、各エントリについて:
-#   1) イメージ内の実ファイル (LINK の位置にある元ファイル) を DEFAULT に退避
-#      -> 実行時の初回シード元になる
+#   1) イメージ内の実体 (LINK の位置にある元ファイルまたは元ディレクトリ) を
+#      DEFAULT に退避 -> 実行時の初回シード元になる
 #   2) LINK を TARGET を指すシンボリックリンクに置き換える
 #      -> ビルド時点では dangling (EFS 未マウント) だが、シンボリックリンクは
 #        アクセス時に解決されるため実行時にマウントされていれば正しく解決される
 #
-#   1) の実ファイルも DEFAULT も無い場合は、警告だけ出して 2) の symlink 作成を
+#   1) の実体も DEFAULT も無い場合は、警告だけ出して 2) の symlink 作成を
 #   続行する (シード元なしのビルド)。この構成では実体を EFS 側にあらかじめ
 #   用意しておくこと (ec2/init-shared-conf.sh)。用意が無ければ実行時の
 #   entrypoint が dangling を検出して起動を中止する。
 #
 # off の場合はイメージを一切書き換えない。linkmap の各 LINK が
-# 「実ファイルとして存在するか」だけを検証する (ビルドの取り違え検知)。
+# 「実ファイルまたは実ディレクトリとして存在するか」だけを検証する。
 # 実行時の entrypoint も同じフラグを見て、EFS 待ち・シード・リンク検証を
 # まとめてスキップする。
 #
@@ -89,14 +89,18 @@ _keep_one() {
         sc_err "  ベースイメージや先行ステージで symlink 化していないか確認してください。"
         return 1
     fi
-    if [ ! -f "$_link" ]; then
-        sc_err "実ファイルが見つかりません: ${_link}"
+    if [ ! -f "$_link" ] && [ ! -d "$_link" ]; then
+        sc_err "実ファイル/ディレクトリが見つかりません: ${_link}"
         sc_err "  linkmap の LINK 列と APP_ROOT が正しいか、アプリ資材の COPY より"
         sc_err "  後ろでこのスクリプトを実行しているかを確認してください。"
         return 1
     fi
 
-    sc_log "実ファイルのまま維持       : ${_link}"
+    if [ -d "$_link" ]; then
+        sc_log "実ディレクトリのまま維持   : ${_link}"
+    else
+        sc_log "実ファイルのまま維持       : ${_link}"
+    fi
     return 0
 }
 
@@ -121,11 +125,15 @@ _build_one() {
 
     if [ -e "$_default" ] && [ ! -L "$_default" ]; then
         sc_log "default 既存のため流用      : ${_default}"
+    elif [ -d "$_link" ] && [ ! -L "$_link" ]; then
+        # ディレクトリに 0644 を付けると辿れなくなるので、モードは cp -a のまま残す
+        cp -a "$_link" "$_default"
+        sc_log "default をイメージから退避  : ${_link} -> ${_default} (directory)"
     elif [ -f "$_link" ] && [ ! -L "$_link" ]; then
         cp -p "$_link" "$_default"
         sc_log "default をイメージから退避  : ${_link} -> ${_default}"
     else
-        # 実ファイルも DEFAULT も無い場合はシード元なしとして扱い、
+        # 実体も DEFAULT も無い場合はシード元なしとして扱い、
         # symlink の作成だけは続行する (実体は EFS 側で用意する運用)。
         sc_warn "シード元がありません (初期値なしで symlink だけ作成します): ${_link}"
         sc_warn "  実行時までに ${_target} を EFS 上に用意してください"
@@ -133,14 +141,24 @@ _build_one() {
         sc_warn "  ${_default} を COPY してください。"
     fi
 
-    if [ -e "$_default" ]; then
+    if [ -d "$_default" ] && [ ! -L "$_default" ]; then
+        chown -R "${APP_UID}:${APP_GID}" "$_default"
+    elif [ -e "$_default" ]; then
         chown "${APP_UID}:${APP_GID}" "$_default"
         chmod "${DEFAULT_FILE_MODE}" "$_default"
     fi
 
     # ---- 2) LINK をシンボリックリンクに差し替え ----------------------------
+    # rm -f はディレクトリを消せない (set -e でビルドが落ちる)。実ディレクトリだけ rm -rf。
     mkdir -p "$(dirname "$_link")"
-    rm -f "$_link"
+    if [ -d "$_link" ] && [ ! -L "$_link" ]; then
+        case "$_link" in
+            /|""|/*/) sc_err "LINK が不正です (末尾 / や / は不可): ${_link}"; return 1 ;;
+        esac
+        rm -rf "$_link"
+    else
+        rm -f "$_link"
+    fi
     ln -s "$_target" "$_link"
     chown -h "${APP_UID}:${APP_GID}" "$_link"
 

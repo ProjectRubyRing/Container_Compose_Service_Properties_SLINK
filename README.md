@@ -73,12 +73,14 @@ test/
   selftest-nolink.sh                 symlink=off (既定) の検証
   selftest-overlay.sh                Deployment Overlays の検証 (実 JBoss 不要)
   selftest-alt.sh                    ALT-A / ALT-B の検証
+  selftest-dir.sh                    ディレクトリ symlink の検証
   stub/jboss-cli.sh                  selftest-overlay.sh 用の偽 jboss-cli
 
 docs/
   design.md                          設計根拠・却下した代替案・運用上の注意
   deployment-overlay.md              Deployment Overlays の設計・前提条件・運用
   alt-per-service-path.md            【追加検討】実体をログツリー配下に置く場合
+  directory-symlink.md               ディレクトリ symlink 共有の変更説明
 ```
 
 ---
@@ -95,6 +97,7 @@ docs/
 bash test/selftest.sh
 bash test/selftest-nolink.sh
 bash test/selftest-overlay.sh
+bash test/selftest-dir.sh
 ```
 
 ### 1. EC2 側の初期構築 (1 回だけ)
@@ -227,6 +230,14 @@ ${APP_ROOT}/servlets/jp/co/sample/base/holiday_config.properties  ${SHARED_CONF_
 
 第 4 列は overlay で上書きする**アーカイブ内の相対パス**。
 `-` なら `deployment browse-content` で自動探索する (通常は `-` でよい)。
+
+ディレクトリを 1 エントリで共有する場合も書式は同じです。
+ファイル向け処理との差分、`mv -T` による公開、overlay ではスキップされること、は
+[docs/directory-symlink.md](docs/directory-symlink.md) を参照してください。
+
+```
+${APP_ROOT}/servlets/jp/co/sample/base/conf  ${SHARED_CONF_DIR}/conf  -  -
+```
 
 ---
 

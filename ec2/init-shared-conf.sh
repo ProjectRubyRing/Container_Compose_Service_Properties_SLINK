@@ -26,7 +26,7 @@ usage() {
     cat <<'USAGE'
 使い方: init-shared-conf.sh [options]
   --dir  <path>    共有設定ディレクトリ (既定: /mnt/logs/tmp)
-  --seed <file>    初期配置するファイル (複数指定可 / basename で配置される)
+  --seed <path>    初期配置するファイルまたはディレクトリ (複数可 / basename で配置)
   --uid  <n>       所有ユーザ  (既定: 6301)
   --gid  <n>       所有グループ (既定: 6302)
   --dry-run        実行内容の表示のみ
@@ -82,6 +82,17 @@ if [ "${#SEED_FILES[@]}" -eq 0 ]; then
     echo "      イメージ同梱の初期値から自動生成されます。"
 else
     for src in "${SEED_FILES[@]}"; do
+        if [ -d "$src" ]; then
+            dst="${SHARED_CONF_DIR}/$(basename "$src")"
+            if [ -e "$dst" ]; then
+                echo "      既存のためスキップ (内容維持): $dst"
+                continue
+            fi
+            run cp -a "$src" "$dst"
+            run chown -R "${APP_UID}:${APP_GID}" "$dst"
+            echo "      ディレクトリを配置しました: $dst"
+            continue
+        fi
         if [ ! -f "$src" ]; then
             echo "ERROR: シードファイルが見つかりません: $src" >&2
             exit 1
